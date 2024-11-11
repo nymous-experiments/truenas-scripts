@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime
 from enum import Enum
@@ -75,18 +76,84 @@ class Certificate(BaseModel):
 CertificateList = TypeAdapter(list[Certificate])
 
 
-async def get_certificates(client: TruenasClient) -> list[Certificate]:
-    r = await client.get("/certificate")
+async def get_certificates(
+    client: TruenasClient,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[Certificate]:
+    r = await client.get(
+        "/certificate",
+        params={
+            "limit": limit,
+            "offset": offset,
+        },
+    )
     r.raise_for_status()
     certificates = CertificateList.validate_json(r.text)
     return certificates
 
 
-async def get_certificate(client: TruenasClient, certificate_id: int) -> Certificate:
-    r = await client.get(f"/certificate/id/{certificate_id}")
-    r.raise_for_status()
-    certificate = Certificate.model_validate_json(r.text)
-    return certificate
+async def get_certificates_iter(
+    client: TruenasClient,
+    limit: int = 50,
+    offset: int = 0,
+) -> AsyncIterator[Certificate]:
+    current_offset = offset
+    might_have_more_certs = True
+    while might_have_more_certs:
+        certs = await get_certificates(client, limit=limit, offset=current_offset)
+        for cert in certs:
+            yield cert
+        current_offset += limit
+        might_have_more_certs = len(certs) > 0
+
+
+@overload
+async def get_certificate(
+    client: TruenasClient,
+    *,
+    certificate_id: int,
+) -> Certificate: ...
+
+
+@overload
+async def get_certificate(
+    client: TruenasClient,
+    *,
+    certificate_name: str,
+) -> Certificate: ...
+
+
+async def get_certificate(
+    client: TruenasClient,
+    *,
+    certificate_id: int | None = None,
+    certificate_name: str | None = None,
+) -> Certificate:
+    """
+    Find a certificate by ID or by name.
+    Searching by name is inefficient, as we need to list all certificates and find the one matching.
+
+    :raises KeyError: If the certificate name is not found
+    """
+    if certificate_id is not None:
+        if certificate_name is not None:
+            raise TypeError(
+                "Only one of certificate_id or certificate_name must be specified."
+            )
+        r = await client.get(f"/certificate/id/{certificate_id}")
+        r.raise_for_status()
+        certificate = Certificate.model_validate_json(r.text)
+        return certificate
+    else:
+        if certificate_name is not None:
+            async for cert in get_certificates_iter(client):
+                if cert.name == certificate_name:
+                    return cert
+
+            raise KeyError(f"Could not find certificate with name {certificate_name}")
+
+        raise TypeError("Either certificate_id or certificate_name must be specified.")
 
 
 @overload
@@ -133,9 +200,12 @@ async def import_certificate(
     job_id = int(r.text)
     if wait:
         job = await wait_job(client, job_id)
-        return await get_certificate(
-            client, job_id
-        )  # TODO: get certificate ID from job
+        if job.state is JobState.success:
+            return await get_certificate(client, certificate_name=name)
+        error_message = job.error or ""
+        raise TypeError(  # TODO: Use a custom error
+            f"Certificate {name} could not be imported. Job error: '{error_message.strip()}'"
+        )
     else:
         return job_id
 
@@ -232,8 +302,11 @@ class ExcInfo(BaseModel):
 
 
 class JobState(str, Enum):
+    waiting = "WAITING"
+    running = "RUNNING"
     success = "SUCCESS"
     failed = "FAILED"
+    aborted = "ABORTED"
 
 
 class Job(BaseModel):
@@ -254,8 +327,8 @@ class Job(BaseModel):
         datetime, Field(validation_alias=AliasPath("time_started", "$date"))
     ]
     time_finished: Annotated[
-        datetime, Field(validation_alias=AliasPath("time_finished", "$date"))
-    ]
+        datetime | None, Field(validation_alias=AliasPath("time_finished", "$date"))
+    ] = None
     credentials: (
         Annotated[
             ApiKeyCredentials
@@ -318,6 +391,13 @@ async def get_job(client: TruenasClient, job_id: int) -> Job:
 
 
 async def wait_job(client: TruenasClient, job_id: int) -> Job:
-    r = await client.post("/core/job_wait", content=str(job_id))
-    r.raise_for_status()
-    return await get_job(client, job_id)
+    job_pending = True
+    while job_pending:
+        r = await client.post("/core/job_wait", content=str(job_id))
+        r.raise_for_status()
+        job = await get_job(client, job_id)
+        if job.state in (JobState.success, JobState.failed, JobState.aborted):
+            job_pending = False
+        else:
+            await asyncio.sleep(1)
+    return job
