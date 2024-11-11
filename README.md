@@ -37,5 +37,20 @@ and API responses are parsed with [Pydantic][python-pydantic] to ensure they loo
 
 You can find the TrueNAS REST API documentation at https://<truenas.domain.or.ip>/api/docs/#restful
 
+## References and inspirations
+
+- [TrueNAS server "middleware" (the code that runs their API)][truenas-middleware]
+- [TrueNAS official Websocket client][truenas-websocket-client]
+- [Async TrueNAS API client (unofficial, uses the Websocket API)][truenas-async-websocket-client]
+- [Another async TrueNAS API client (unofficial, uses the REST API)][truenas-async-rest-client]
+- [TrueNAS cert updater][truenas-cert-updater]
+- [deploy freenas][truenas-deploy-freenas]
+
 [python-httpx]: https://www.python-httpx.org/
 [python-pydantic]: https://docs.pydantic.dev/
+[truenas-async-rest-client]: https://github.com/cyr-ius/truenaspy
+[truenas-async-websocket-client]: https://github.com/sdwilsh/aiotruenas-client
+[truenas-cert-updater]: https://github.com/mcao2/truenas-cert-updater
+[truenas-deploy-freenas]: https://github.com/danb35/deploy-freenas
+[truenas-middleware]: https://github.com/truenas/middleware
+[truenas-websocket-client]: https://github.com/truenas/api_client
